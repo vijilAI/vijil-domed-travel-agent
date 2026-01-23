@@ -1,0 +1,21 @@
+[project]
+name = "vijil-domed-travel-agent"
+version = "0.1.0"
+description = "Domed enterprise travel agent with Vijil Dome guardrails - demonstrates Diamond, Dome, and Darwin capabilities"
+requires-python = ">=3.12"
+dependencies = [
+    "strands-agents>=0.1.0",
+    "anthropic>=0.40.0",
+    "aiosqlite>=0.20.0",
+    "httpx>=0.27.0",
+    "duckduckgo-search>=6.0.0",
+    "beautifulsoup4>=4.12.0",
+    "vijil-dome>=0.7.0",
+    "uvicorn>=0.30.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+]
