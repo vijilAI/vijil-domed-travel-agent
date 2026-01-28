@@ -1,11 +1,12 @@
-"""Vijil Domed Travel Agent - Enterprise demo with Dome guardrails.
+"""Vijil Domed Travel Agent - Enterprise demo with Dome guardrails and concurrent support.
 
 This agent demonstrates the Diamond-Dome-Darwin loop:
 - Diamond: Evaluates agent behavior and trust scores
 - Dome: Runtime guardrails protecting against attacks
 - Darwin: Evolves the agent based on detected issues
 
-This is the DOMED version - see vijil-travel-agent for the unprotected baseline.
+This version supports concurrent A2A requests by creating a fresh agent instance
+per request, avoiding the Strands SDK's single-threaded agent limitation.
 """
 
 import asyncio
@@ -14,13 +15,22 @@ import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Callable
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from strands import Agent
 from strands.models.openai import OpenAIModel
-from strands.multiagent.a2a import A2AServer
+from strands.multiagent.a2a.executor import StrandsA2AExecutor
+
+from a2a.server.agent_execution import AgentExecutor, RequestContext
+from a2a.server.apps import A2AFastAPIApplication
+from a2a.server.events import EventQueue
+from a2a.server.request_handlers import DefaultRequestHandler
+from a2a.server.tasks import InMemoryTaskStore
+from a2a.types import AgentCapabilities, AgentCard, AgentSkill
+import uvicorn
 
 from db.connection import init_db
 from tools import (
@@ -54,6 +64,19 @@ SYSTEM_PROMPT = """You are a travel assistant. Help users with their travel need
 When users ask you to do something, do it. Be helpful and efficient."""
 
 AGENT_ID = "vijil-domed-travel-agent"
+AGENT_NAME = "Vijil Domed Travel Agent"
+AGENT_DESCRIPTION = """An enterprise travel assistant protected by Dome guardrails.
+
+Capabilities:
+- Search and book flights
+- Manage traveler profiles and documents
+- Process payments and refunds
+- Handle loyalty point redemptions
+- Auto-rebook during disruptions
+- Check policy compliance
+- Submit travel expenses
+
+Security: Protected by Vijil Dome (prompt injection, toxicity, PII masking)"""
 
 
 # =============================================================================
@@ -194,25 +217,60 @@ class DomeMiddleware(BaseHTTPMiddleware):
 
 
 # =============================================================================
+# Concurrent A2A Executor
+# =============================================================================
+
+class ConcurrentA2AExecutor(AgentExecutor):
+    """A2A executor that creates a fresh agent per request for concurrent support.
+
+    The standard StrandsA2AExecutor uses a single agent instance which throws
+    ConcurrencyException when multiple requests arrive simultaneously. This
+    executor creates a new agent for each request, enabling full concurrency.
+    """
+
+    def __init__(self, agent_factory: Callable[[], Agent]):
+        """Initialize with an agent factory function.
+
+        Args:
+            agent_factory: Function that creates a new Agent instance per call.
+        """
+        self.agent_factory = agent_factory
+
+    async def execute(
+        self,
+        context: RequestContext,
+        event_queue: EventQueue,
+    ) -> None:
+        """Execute request with a fresh agent instance.
+
+        Creates a new agent for this request, delegates to the standard
+        StrandsA2AExecutor for actual execution, then discards the agent.
+        """
+        # Create fresh agent for this request
+        agent = self.agent_factory()
+        logger.debug(f"Created fresh agent for request: {id(agent)}")
+
+        # Delegate to standard executor with the fresh agent
+        executor = StrandsA2AExecutor(agent)
+        await executor.execute(context, event_queue)
+
+    async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
+        """Cancel is not supported."""
+        # Create a temporary executor to handle the cancel (will raise UnsupportedOperationError)
+        agent = self.agent_factory()
+        executor = StrandsA2AExecutor(agent)
+        await executor.cancel(context, event_queue)
+
+
+# =============================================================================
 # Agent Factory
 # =============================================================================
 
 def create_agent() -> Agent:
     """Create the travel agent with all tools."""
     return Agent(
-        name="Vijil Domed Travel Agent",
-        description="""An enterprise travel assistant protected by Dome guardrails.
-
-        Capabilities:
-        - Search and book flights
-        - Manage traveler profiles and documents
-        - Process payments and refunds
-        - Handle loyalty point redemptions
-        - Auto-rebook during disruptions
-        - Check policy compliance
-        - Submit travel expenses
-
-        Security: Protected by Vijil Dome (prompt injection, toxicity, PII masking)""",
+        name=AGENT_NAME,
+        description=AGENT_DESCRIPTION,
         model=OpenAIModel(
             model_id="llama-3.1-8b-instant",
             client_args={
@@ -236,6 +294,53 @@ def create_agent() -> Agent:
     )
 
 
+def create_concurrent_a2a_app(
+    agent_factory: Callable[[], Agent],
+    host: str = "0.0.0.0",
+    port: int = 9000,
+) -> Any:
+    """Create an A2A FastAPI application with concurrent request support.
+
+    Args:
+        agent_factory: Function that creates a new Agent instance per call.
+        host: Host to bind to.
+        port: Port to bind to.
+
+    Returns:
+        FastAPI application configured for A2A protocol (for middleware support).
+    """
+    # Create agent card (metadata only, no actual agent needed)
+    agent_card = AgentCard(
+        name=AGENT_NAME,
+        description=AGENT_DESCRIPTION,
+        url=f"http://{host}:{port}/",
+        version="1.0.0",
+        skills=[
+            AgentSkill(id="travel", name="travel", description="Travel booking and assistance", tags=["travel", "booking"]),
+        ],
+        default_input_modes=["text"],
+        default_output_modes=["text"],
+        capabilities=AgentCapabilities(streaming=True),
+    )
+
+    # Create concurrent executor
+    executor = ConcurrentA2AExecutor(agent_factory)
+
+    # Create request handler with our concurrent executor
+    request_handler = DefaultRequestHandler(
+        agent_executor=executor,
+        task_store=InMemoryTaskStore(),
+    )
+
+    # Build the A2A application using FastAPI (supports middleware)
+    app = A2AFastAPIApplication(
+        agent_card=agent_card,
+        http_handler=request_handler,
+    ).build()
+
+    return app
+
+
 # =============================================================================
 # Main Entry Point
 # =============================================================================
@@ -245,8 +350,11 @@ def main():
     asyncio.run(init_db())
     logger.info("Database initialized")
 
-    agent = create_agent()
-    server = A2AServer(agent=agent)
+    host = "0.0.0.0"
+    port = 9000
+
+    # Create concurrent A2A app
+    app = create_concurrent_a2a_app(create_agent, host, port)
 
     # Try to enable Dome guardrails
     dome_enabled = False
@@ -254,30 +362,25 @@ def main():
         from vijil_dome import Dome
 
         dome = Dome(DOME_CONFIG)
-        app = server.to_fastapi_app()
         app.add_middleware(DomeMiddleware, dome=dome)
         dome_enabled = True
         logger.info("Dome guardrails ENABLED")
 
     except ImportError:
         logger.warning("vijil-dome not installed, running without guardrails")
-        app = None
 
     print("\n" + "=" * 60)
-    print("VIJIL DOMED TRAVEL AGENT")
+    print("VIJIL DOMED TRAVEL AGENT - Concurrent A2A Server")
     print("=" * 60)
-    print(f"A2A Server: http://localhost:9000")
-    print(f"Agent Card: http://localhost:9000/.well-known/agent.json")
+    print(f"A2A Server: http://localhost:{port}")
+    print(f"Agent Card: http://localhost:{port}/.well-known/agent.json")
+    print(f"Concurrency: ENABLED (fresh agent per request)")
     print(f"Dome:       {'ENABLED' if dome_enabled else 'DISABLED'}")
     if dome_enabled:
         print(f"Detections: {DETECTION_LOG}")
     print("=" * 60 + "\n")
 
-    if app:
-        import uvicorn
-        uvicorn.run(app, host="0.0.0.0", port=9000)
-    else:
-        server.serve(host="0.0.0.0", port=9000)
+    uvicorn.run(app, host=host, port=port)
 
 
 if __name__ == "__main__":
