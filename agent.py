@@ -65,18 +65,80 @@ When users ask you to do something, do it. Be helpful and efficient."""
 
 AGENT_ID = "vijil-domed-travel-agent"
 AGENT_NAME = "Vijil Domed Travel Agent"
-AGENT_DESCRIPTION = """An enterprise travel assistant protected by Dome guardrails.
+AGENT_DESCRIPTION = """Enterprise travel booking agent PROTECTED by Vijil Dome guardrails.
 
-Capabilities:
-- Search and book flights
-- Manage traveler profiles and documents
-- Process payments and refunds
-- Handle loyalty point redemptions
-- Auto-rebook during disruptions
-- Check policy compliance
-- Submit travel expenses
+This is the SECURED version of the Vijil Travel Agent, demonstrating how Dome
+provides runtime protection against:
+- Prompt injection attacks (encoding heuristics + mBERT detection)
+- Input/output toxicity (FlashText + DeBERTa moderation)
+- PII exposure (Presidio masking)
 
-Security: Protected by Vijil Dome (prompt injection, toxicity, PII masking)"""
+Compare trust scores between this agent and the unprotected vijil-travel-agent
+to see Dome's impact on security, safety, and reliability.
+
+Capabilities: Flight search, booking, payments, loyalty points, expense management.
+Model: Groq llama-3.1-8b-instant
+Protocol: A2A (Agent-to-Agent)
+Protection: Vijil Dome (active)"""
+
+
+# Define all agent skills for the A2A agent card
+AGENT_SKILLS = [
+    AgentSkill(
+        id="search_flights",
+        name="Search Flights",
+        description="Search for available flights between cities with date and passenger filters",
+        tags=["research", "flights", "search"],
+    ),
+    AgentSkill(
+        id="web_search",
+        name="Web Search",
+        description="Search the web for travel information, destinations, and general queries",
+        tags=["research", "web", "information"],
+    ),
+    AgentSkill(
+        id="create_booking",
+        name="Create Booking",
+        description="Book a flight for a traveler using their profile and payment method",
+        tags=["booking", "flights", "transactions"],
+    ),
+    AgentSkill(
+        id="auto_rebook",
+        name="Auto Rebook",
+        description="Automatically rebook travelers affected by flight disruptions or cancellations",
+        tags=["booking", "disruption", "automation"],
+    ),
+    AgentSkill(
+        id="save_traveler_profile",
+        name="Save Traveler Profile",
+        description="Store traveler information including name, email, passport, and preferences",
+        tags=["profile", "pii", "storage"],
+    ),
+    AgentSkill(
+        id="process_payment",
+        name="Process Payment",
+        description="Process payments for bookings using stored payment methods",
+        tags=["payments", "transactions", "financial"],
+    ),
+    AgentSkill(
+        id="redeem_points",
+        name="Redeem Points",
+        description="Redeem loyalty points for flight upgrades or discounts",
+        tags=["loyalty", "points", "rewards"],
+    ),
+    AgentSkill(
+        id="check_policy_compliance",
+        name="Check Policy Compliance",
+        description="Verify if a booking complies with corporate travel policies",
+        tags=["policy", "compliance", "corporate"],
+    ),
+    AgentSkill(
+        id="submit_expense",
+        name="Submit Expense",
+        description="Submit travel expenses for reimbursement with receipt attachments",
+        tags=["expense", "reimbursement", "finance"],
+    ),
+]
 
 
 # =============================================================================
@@ -309,15 +371,13 @@ def create_concurrent_a2a_app(
     Returns:
         FastAPI application configured for A2A protocol (for middleware support).
     """
-    # Create agent card (metadata only, no actual agent needed)
+    # Create agent card with all skills documented
     agent_card = AgentCard(
         name=AGENT_NAME,
         description=AGENT_DESCRIPTION,
         url=f"http://{host}:{port}/",
         version="1.0.0",
-        skills=[
-            AgentSkill(id="travel", name="travel", description="Travel booking and assistance", tags=["travel", "booking"]),
-        ],
+        skills=AGENT_SKILLS,
         default_input_modes=["text"],
         default_output_modes=["text"],
         capabilities=AgentCapabilities(streaming=True),
