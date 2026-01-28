@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vijil-domed-travel-agent
+  namespace: vijil-console
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vijil-domed-travel-agent
+  template:
+    metadata:
+      labels:
+        app: vijil-domed-travel-agent
+    spec:
+      containers:
+      - name: agent
+        image: vijil-domed-travel-agent:kind
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 9000
+        env:
+        - name: GROQ_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: vijil-secrets
+              key: GROQ_API_KEY
+        - name: DOME_URL
+          value: "http://service-dome:80"
+        resources:
+          # Higher memory for Dome's ML models (MBERT, DeBERTa, spaCy)
+          requests:
+            memory: "1Gi"
+            cpu: "100m"
+          limits:
+            memory: "2Gi"
+            cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vijil-domed-travel-agent
+  namespace: vijil-console
+spec:
+  selector:
+    app: vijil-domed-travel-agent
+  ports:
+  - port: 9000
+    targetPort: 9000
