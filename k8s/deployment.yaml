@@ -25,16 +25,24 @@ spec:
             secretKeyRef:
               name: vijil-secrets
               key: GROQ_API_KEY
+        - name: OPENAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: vijil-secrets
+              key: OPENAI_API_KEY
+        - name: DOME_FAST_MODE
+          value: "1"
         - name: DOME_URL
           value: "http://service-dome:80"
         resources:
-          # Higher memory for Dome's ML models (MBERT, DeBERTa, spaCy)
+          # Higher resources for parallel Dome guard execution
+          # ML models (MBERT, DeBERTa, spaCy) run concurrently
           requests:
-            memory: "1Gi"
-            cpu: "100m"
-          limits:
             memory: "2Gi"
             cpu: "500m"
+          limits:
+            memory: "4Gi"
+            cpu: "2000m"
 ---
 apiVersion: v1
 kind: Service
