@@ -30,6 +30,7 @@ from a2a.server.events import EventQueue
 from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.tasks import InMemoryTaskStore
 from a2a.types import AgentCapabilities, AgentCard, AgentSkill
+from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
 from db.connection import init_db
@@ -400,6 +401,15 @@ def create_concurrent_a2a_app(
         agent_card=agent_card,
         http_handler=request_handler,
     ).build()
+
+    # Add CORS middleware for demo UI
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     return app
 
