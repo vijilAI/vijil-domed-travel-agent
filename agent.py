@@ -402,15 +402,6 @@ def create_concurrent_a2a_app(
         http_handler=request_handler,
     ).build()
 
-    # Add CORS middleware for demo UI
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-
     return app
 
 
@@ -441,6 +432,15 @@ def main():
 
     except ImportError:
         logger.warning("vijil-dome not installed, running without guardrails")
+
+    # Add CORS middleware AFTER Dome (LIFO order means CORS runs first)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     print("\n" + "=" * 60)
     print("VIJIL DOMED TRAVEL AGENT - Concurrent A2A Server")
