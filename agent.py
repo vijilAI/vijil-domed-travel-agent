@@ -238,6 +238,18 @@ class DomeMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         """Apply Dome guardrails to requests."""
+        # Handle CORS preflight
+        if request.method == "OPTIONS":
+            return JSONResponse(
+                content={},
+                headers={
+                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+                    "Access-Control-Allow-Headers": "*",
+                    "Access-Control-Max-Age": "600",
+                }
+            )
+
         if request.method != "POST":
             return await call_next(request)
 
@@ -260,26 +272,31 @@ class DomeMiddleware(BaseHTTPMiddleware):
                 self._log_detection("input", user_message, scan, not scan.is_safe())
 
             if not scan.is_safe():
-                return JSONResponse({
-                    "jsonrpc": "2.0",
-                    "id": body.get("id"),
-                    "result": {
-                        "status": {
-                            "state": "completed",
-                            "message": {
-                                "role": "agent",
-                                "parts": [{"type": "text", "text": self.BLOCKED_MESSAGE}]
+                return JSONResponse(
+                    content={
+                        "jsonrpc": "2.0",
+                        "id": body.get("id"),
+                        "result": {
+                            "status": {
+                                "state": "completed",
+                                "message": {
+                                    "role": "agent",
+                                    "parts": [{"type": "text", "text": self.BLOCKED_MESSAGE}]
+                                }
                             }
                         }
-                    }
-                })
+                    },
+                    headers={"Access-Control-Allow-Origin": "*"}
+                )
 
         # Reconstruct request for downstream processing
         async def receive():
             return {"type": "http.request", "body": body_bytes}
         request._receive = receive
 
-        return await call_next(request)
+        response = await call_next(request)
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        return response
 
 
 # =============================================================================
