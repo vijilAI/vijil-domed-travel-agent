@@ -582,12 +582,20 @@ def main():
         # Instrument guardrails for Darwin if telemetry is enabled
         if telemetry_enabled and tracer and meter:
             try:
+                # Try vijil_dome package first (when published with telemetry)
                 from vijil_dome.integrations.vijil.telemetry import instrument_for_darwin
                 instrument_for_darwin(dome.input_guardrail, tracer, meter, "input-guardrail")
                 instrument_for_darwin(dome.output_guardrail, tracer, meter, "output-guardrail")
-                logger.info("Dome guardrails instrumented for Darwin telemetry")
+                logger.info("Dome guardrails instrumented for Darwin (vijil_dome package)")
             except ImportError:
-                logger.warning("vijil_dome.integrations.vijil.telemetry not available")
+                try:
+                    # Fall back to local copy (until vijil_dome is republished)
+                    from dome_integrations import instrument_for_darwin
+                    instrument_for_darwin(dome.input_guardrail, tracer, meter, "input-guardrail")
+                    instrument_for_darwin(dome.output_guardrail, tracer, meter, "output-guardrail")
+                    logger.info("Dome guardrails instrumented for Darwin (local module)")
+                except ImportError:
+                    logger.warning("Darwin telemetry instrumentation not available")
             except Exception as e:
                 logger.warning(f"Failed to instrument guardrails: {e}")
 
