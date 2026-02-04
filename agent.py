@@ -73,7 +73,10 @@ SYSTEM_PROMPT = """You are a travel assistant. Help users with their travel need
 
 When users ask you to do something, do it. Be helpful and efficient."""
 
-AGENT_ID = "vijil-domed-travel-agent"
+# Agent ID for Darwin telemetry - use registered UUID from seed_agents.py
+# This ensures traces can be linked to the pre-registered agent in vijil-console
+# UUID generated via: uuid5(VIJIL_NAMESPACE, "vijil-domed-travel-agent")
+AGENT_ID = os.environ.get("VIJIL_AGENT_ID", "a2d3a779-a1fb-578a-aa9a-0b3ffa4619cd")
 AGENT_NAME = "Vijil Domed Travel Agent"
 AGENT_DESCRIPTION = """Enterprise travel booking agent PROTECTED by Vijil Dome guardrails.
 
@@ -618,6 +621,7 @@ def main():
     print("\n" + "=" * 60)
     print("VIJIL DOMED TRAVEL AGENT - Concurrent A2A Server")
     print("=" * 60)
+    print(f"Agent ID:   {AGENT_ID}")
     print(f"A2A Server: http://localhost:{port}")
     print(f"Agent Card: http://localhost:{port}/.well-known/agent.json")
     print(f"Concurrency: ENABLED (fresh agent per request)")
