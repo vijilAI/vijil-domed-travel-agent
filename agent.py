@@ -340,10 +340,10 @@ class DomeMiddleware(BaseHTTPMiddleware):
                 team_id=self.team_id,
             )
 
-            if scan.flagged or not scan.is_safe():
-                self._log_detection("input", user_message, scan, not scan.is_safe())
+            if scan.flagged:
+                self._log_detection("input", user_message, scan, scan.flagged)
 
-            if not scan.is_safe():
+            if scan.flagged:
                 return JSONResponse(
                     content={
                         "jsonrpc": "2.0",
