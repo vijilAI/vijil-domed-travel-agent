@@ -7,6 +7,11 @@ This agent demonstrates the Diamond-Dome-Darwin loop:
 
 This version supports concurrent A2A requests by creating a fresh agent instance
 per request, avoiding the Strands SDK's single-threaded agent limitation.
+
+Telemetry Integration:
+    When OTEL_EXPORTER_OTLP_ENDPOINT is set, this agent emits Darwin-compatible
+    telemetry to the observability stack (Tempo/Mimir). Darwin queries these
+    traces to trigger mutation proposals based on detected vulnerabilities.
 """
 
 import asyncio
@@ -15,7 +20,7 @@ import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Optional, TYPE_CHECKING
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -45,6 +50,10 @@ from tools import (
     check_policy_compliance,
     submit_expense,
 )
+
+if TYPE_CHECKING:
+    from opentelemetry.trace import Tracer
+    from opentelemetry.metrics import Meter
 
 # Configure logging
 logging.basicConfig(
@@ -223,7 +232,11 @@ DETECTION_LOG = Path("dome_detections.jsonl")
 # =============================================================================
 
 class DomeMiddleware(BaseHTTPMiddleware):
-    """Middleware that applies Dome guardrails to A2A requests."""
+    """Middleware that applies Dome guardrails to A2A requests.
+
+    When telemetry is enabled, emits Darwin-compatible spans and metrics
+    that can be queried by the evolution system to trigger mutations.
+    """
 
     # Refusal message crafted to match patterns Diamond's RefusalDetector recognizes
     # as a proper refusal (important for accurate security scoring of protected agents)
@@ -233,9 +246,17 @@ class DomeMiddleware(BaseHTTPMiddleware):
         "I'd be happy to assist you with legitimate travel-related questions instead."
     )
 
-    def __init__(self, app, dome):
+    def __init__(
+        self,
+        app,
+        dome,
+        team_id: Optional[str] = None,
+        tracer: Optional["Tracer"] = None,
+    ):
         super().__init__(app)
         self.dome = dome
+        self.team_id = team_id or os.environ.get("TEAM_ID")
+        self.tracer = tracer
 
     def _extract_message(self, body: dict) -> str | None:
         """Extract user message from A2A request."""
@@ -309,8 +330,15 @@ class DomeMiddleware(BaseHTTPMiddleware):
 
         user_message = self._extract_message(body)
         if user_message:
-            # Use async version since we're in an async context
-            scan = await self.dome.async_guard_input(user_message, agent_id=AGENT_ID)
+            # Use the guardrail directly to pass team_id for Darwin telemetry
+            # instrument_for_darwin() wraps async_scan to emit OTEL spans with:
+            # - agent.id, team.id for filtering
+            # - detection.label, detection.score, detection.method for Darwin queries
+            scan = await self.dome.input_guardrail.async_scan(
+                user_message,
+                agent_id=AGENT_ID,
+                team_id=self.team_id,
+            )
 
             if scan.flagged or not scan.is_safe():
                 self._log_detection("input", user_message, scan, not scan.is_safe())
@@ -525,13 +553,45 @@ def main():
     # Create concurrent A2A app
     app = create_concurrent_a2a_app(create_agent, host, port)
 
+    # Set up telemetry if OTEL endpoint is configured
+    tracer = None
+    meter = None
+    telemetry_enabled = False
+    otel_endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
+
+    if otel_endpoint:
+        try:
+            from telemetry import setup_telemetry, get_team_id
+            tracer, meter = setup_telemetry(otlp_endpoint=otel_endpoint)
+            telemetry_enabled = True
+            logger.info(f"OTEL telemetry ENABLED: {otel_endpoint}")
+        except ImportError as e:
+            logger.warning(f"OpenTelemetry packages not installed: {e}")
+        except Exception as e:
+            logger.warning(f"Failed to set up telemetry: {e}")
+
     # Try to enable Dome guardrails
     dome_enabled = False
+    team_id = os.environ.get("TEAM_ID")
+
     try:
         from vijil_dome import Dome
 
         dome = Dome(DOME_CONFIG)
-        app.add_middleware(DomeMiddleware, dome=dome)
+
+        # Instrument guardrails for Darwin if telemetry is enabled
+        if telemetry_enabled and tracer and meter:
+            try:
+                from vijil_dome.integrations.vijil.telemetry import instrument_for_darwin
+                instrument_for_darwin(dome.input_guardrail, tracer, meter, "input-guardrail")
+                instrument_for_darwin(dome.output_guardrail, tracer, meter, "output-guardrail")
+                logger.info("Dome guardrails instrumented for Darwin telemetry")
+            except ImportError:
+                logger.warning("vijil_dome.integrations.vijil.telemetry not available")
+            except Exception as e:
+                logger.warning(f"Failed to instrument guardrails: {e}")
+
+        app.add_middleware(DomeMiddleware, dome=dome, team_id=team_id, tracer=tracer)
         dome_enabled = True
         logger.info("Dome guardrails ENABLED")
 
@@ -554,8 +614,13 @@ def main():
     print(f"Agent Card: http://localhost:{port}/.well-known/agent.json")
     print(f"Concurrency: ENABLED (fresh agent per request)")
     print(f"Dome:       {'ENABLED' if dome_enabled else 'DISABLED'}")
+    print(f"Telemetry:  {'ENABLED' if telemetry_enabled else 'DISABLED'}")
+    if telemetry_enabled:
+        print(f"OTEL:       {otel_endpoint}")
+    if team_id:
+        print(f"Team ID:    {team_id}")
     if dome_enabled:
-        print(f"Detections: {DETECTION_LOG}")
+        print(f"Detections: {DETECTION_LOG} (file backup)")
     print("=" * 60 + "\n")
 
     uvicorn.run(app, host=host, port=port)

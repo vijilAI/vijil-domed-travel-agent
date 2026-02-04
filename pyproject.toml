@@ -1,6 +1,6 @@
 [project]
 name = "vijil-domed-travel-agent"
-version = "0.1.0"
+version = "0.2.0"
 description = "Domed enterprise travel agent with Vijil Dome guardrails - demonstrates Diamond, Dome, and Darwin capabilities"
 requires-python = ">=3.12"
 dependencies = [
@@ -12,6 +12,10 @@ dependencies = [
     "beautifulsoup4>=4.12.0",
     "vijil-dome>=0.7.0",
     "uvicorn>=0.30.0",
+    # OpenTelemetry for Darwin integration
+    "opentelemetry-api>=1.20.0",
+    "opentelemetry-sdk>=1.20.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.20.0",
 ]
 
 [project.optional-dependencies]
