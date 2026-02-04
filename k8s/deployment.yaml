@@ -34,6 +34,16 @@ spec:
           value: "1"
         - name: DOME_URL
           value: "http://service-dome:80"
+        # OpenTelemetry for Darwin integration
+        # Emits detection traces to Tempo for Darwin to query
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "http://otel-collector.vijil-telemetry.svc.cluster.local:4318"
+        - name: OTEL_SERVICE_NAME
+          value: "vijil-domed-travel-agent"
+        # Team ID for multi-tenant filtering (optional - can be passed via API)
+        # Set this to enable team-scoped Darwin queries
+        # - name: TEAM_ID
+        #   value: "<team-uuid>"
         resources:
           # Higher resources for parallel Dome guard execution
           # ML models (MBERT, DeBERTa, spaCy) run concurrently
