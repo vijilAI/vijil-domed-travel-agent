@@ -78,31 +78,96 @@ When users ask you to do something, do it. Be helpful and efficient."""
 # - Darwin writes mutations to this file, agent hot-reloads without restart
 # - File format: {"version": N, "system_prompt": "...", "dome_config": {...}}
 #
+# Hot-reload capabilities:
+# - system_prompt: Hot-reloaded per request (agent created fresh each time)
+# - dome_config: Applied at startup only (restart required for changes)
+#
 # For backwards compatibility, AGENT_SYSTEM_PROMPT env var still works
 # but GENOME_PATH is preferred for production Darwin integration.
 
+# Type alias for genome to avoid circular import at module level
+if TYPE_CHECKING:
+    from genome_loader import GenomeMutation
 
-def get_system_prompt() -> str:
-    """Get the current system prompt, checking genome file first.
+
+def get_current_genome() -> "GenomeMutation":
+    """Get the current genome mutation, with caching and hot-reload.
+
+    Returns the full genome containing all mutable parameters:
+    - system_prompt: Instruction genes
+    - dome_config: Defense genes (Dome guardrail configuration)
+
+    The genome loader handles caching and file modification checks.
+    """
+    from genome_loader import get_current_genome as _get_genome
+    return _get_genome()
+
+
+def get_effective_system_prompt(genome: "GenomeMutation | None" = None) -> str:
+    """Get the effective system prompt from genome or fallbacks.
 
     Priority:
-    1. GENOME_PATH file (if exists and has system_prompt)
+    1. genome.system_prompt (if provided and not None)
     2. AGENT_SYSTEM_PROMPT env var
     3. DEFAULT_SYSTEM_PROMPT
-    """
-    # Try genome file first (supports hot-reload)
-    genome_path = os.environ.get("GENOME_PATH")
-    if genome_path:
-        try:
-            from genome_loader import get_current_genome
-            genome = get_current_genome()
-            if genome.system_prompt:
-                return genome.system_prompt
-        except Exception as e:
-            logger.warning(f"Failed to load genome: {e}, using fallback")
 
-    # Fall back to env var or default
+    Args:
+        genome: Optional pre-loaded genome. If None, loads from file.
+    """
+    if genome is None:
+        genome_path = os.environ.get("GENOME_PATH")
+        if genome_path:
+            try:
+                genome = get_current_genome()
+            except Exception as e:
+                logger.warning(f"Failed to load genome: {e}, using fallback")
+
+    if genome and genome.system_prompt:
+        return genome.system_prompt
+
     return os.environ.get("AGENT_SYSTEM_PROMPT", DEFAULT_SYSTEM_PROMPT)
+
+
+def get_effective_dome_config(genome: "GenomeMutation | None" = None) -> dict:
+    """Get the effective Dome config, merging genome overrides with defaults.
+
+    The genome's dome_config can override specific fields in the default config.
+    This allows Darwin to tune thresholds without specifying the entire config.
+
+    Args:
+        genome: Optional pre-loaded genome. If None, loads from file.
+
+    Returns:
+        Merged Dome configuration dict.
+    """
+    # Start with the appropriate base config
+    base_config = DOME_CONFIG_FAST if DOME_FAST_MODE else DOME_CONFIG_FULL
+
+    if genome is None:
+        genome_path = os.environ.get("GENOME_PATH")
+        if genome_path:
+            try:
+                genome = get_current_genome()
+            except Exception as e:
+                logger.warning(f"Failed to load genome for dome_config: {e}")
+                return base_config
+
+    if not genome or not genome.dome_config:
+        return base_config
+
+    # Deep merge genome overrides into base config
+    return _deep_merge(base_config, genome.dome_config)
+
+
+def _deep_merge(base: dict, overrides: dict) -> dict:
+    """Deep merge overrides into base dict, returning new dict."""
+    result = base.copy()
+    for key, value in overrides.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
 
 # Agent ID for Darwin telemetry - use registered UUID from seed_agents.py
 # This ensures traces can be linked to the pre-registered agent in vijil-console
@@ -506,9 +571,22 @@ def create_agent() -> Agent:
 
     System prompt is loaded dynamically from genome file (if GENOME_PATH set),
     enabling hot-reload of Darwin mutations without agent restart.
+
+    Note: Each request creates a fresh agent, so genome changes to system_prompt
+    are picked up immediately. Dome config changes require agent restart.
     """
-    # Get current system prompt (checks genome file for hot-reload)
-    current_prompt = get_system_prompt()
+    # Get current genome (single read for consistency)
+    genome = None
+    genome_path = os.environ.get("GENOME_PATH")
+    if genome_path:
+        try:
+            genome = get_current_genome()
+            logger.debug(f"Loaded genome v{genome.version} for agent creation")
+        except Exception as e:
+            logger.warning(f"Failed to load genome: {e}")
+
+    # Get effective system prompt from genome or fallbacks
+    current_prompt = get_effective_system_prompt(genome)
 
     return Agent(
         name=AGENT_NAME,
@@ -613,14 +691,27 @@ def main():
         except Exception as e:
             logger.warning(f"Failed to set up telemetry: {e}")
 
+    # Load genome at startup for dome_config (and initial system_prompt info)
+    startup_genome = None
+    genome_path = os.environ.get("GENOME_PATH")
+    if genome_path:
+        try:
+            startup_genome = get_current_genome()
+            logger.info(f"Loaded startup genome v{startup_genome.version}")
+        except Exception as e:
+            logger.warning(f"Failed to load startup genome: {e}")
+
     # Try to enable Dome guardrails
     dome_enabled = False
     team_id = os.environ.get("TEAM_ID")
 
+    # Get effective Dome config (base + genome overrides)
+    effective_dome_config = get_effective_dome_config(startup_genome)
+
     try:
         from vijil_dome import Dome
 
-        dome = Dome(DOME_CONFIG)
+        dome = Dome(effective_dome_config)
 
         # Instrument guardrails for Darwin if telemetry is enabled
         if telemetry_enabled and tracer and meter:
@@ -658,27 +749,22 @@ def main():
         allow_headers=["*"],
     )
 
-    # Detect prompt source for startup banner
-    genome_path = os.environ.get("GENOME_PATH")
-    genome_version = None
-    if genome_path:
-        try:
-            from genome_loader import get_current_genome
-            genome = get_current_genome()
-            if genome.system_prompt:
-                prompt_source = f"GENOME v{genome.version}"
-                genome_version = genome.version
-            else:
-                prompt_source = "genome (no prompt override)"
-        except Exception as e:
-            logger.warning(f"Failed to load genome for banner: {e}")
-            prompt_source = "genome (load error)"
+    # Determine sources for startup banner (using already-loaded startup_genome)
+    prompt_source = "DEFAULT"
+    dome_config_source = "FAST MODE" if DOME_FAST_MODE else "FULL MODE"
+
+    if startup_genome:
+        if startup_genome.system_prompt:
+            prompt_source = f"GENOME v{startup_genome.version}"
+        else:
+            prompt_source = f"GENOME v{startup_genome.version} (no prompt override)"
+
+        if startup_genome.dome_config:
+            dome_config_source = f"GENOME v{startup_genome.version} + {'FAST' if DOME_FAST_MODE else 'FULL'}"
     elif os.environ.get("AGENT_SYSTEM_PROMPT"):
         prompt_source = "ENVIRONMENT VAR"
-    else:
-        prompt_source = "DEFAULT"
 
-    current_prompt = get_system_prompt()
+    current_prompt = get_effective_system_prompt(startup_genome)
 
     print("\n" + "=" * 60)
     print("VIJIL DOMED TRAVEL AGENT - Concurrent A2A Server")
@@ -687,19 +773,31 @@ def main():
     print(f"A2A Server: http://localhost:{port}")
     print(f"Agent Card: http://localhost:{port}/.well-known/agent.json")
     print(f"Concurrency: ENABLED (fresh agent per request)")
-    print(f"System Prompt: {prompt_source} ({len(current_prompt)} chars)")
+    print("-" * 60)
+    print("GENOME STATUS:")
     if genome_path:
-        print(f"Genome Path: {genome_path}")
-        if genome_version is not None:
-            print(f"Genome Ver:  v{genome_version}")
-    print(f"Dome:       {'ENABLED' if dome_enabled else 'DISABLED'}")
-    print(f"Telemetry:  {'ENABLED' if telemetry_enabled else 'DISABLED'}")
+        print(f"  Path:     {genome_path}")
+        if startup_genome:
+            print(f"  Version:  v{startup_genome.version}")
+            print(f"  Prompt:   {'OVERRIDE' if startup_genome.system_prompt else 'default'} ({len(current_prompt)} chars)")
+            print(f"  Dome:     {'OVERRIDE' if startup_genome.dome_config else 'default'}")
+        else:
+            print(f"  Status:   NOT LOADED (using defaults)")
+    else:
+        print(f"  Status:   NOT CONFIGURED (GENOME_PATH not set)")
+    print("-" * 60)
+    print(f"System Prompt: {prompt_source}")
+    print(f"Dome Config:   {dome_config_source}")
+    print(f"Dome:          {'ENABLED' if dome_enabled else 'DISABLED'}")
+    print(f"Telemetry:     {'ENABLED' if telemetry_enabled else 'DISABLED'}")
     if telemetry_enabled:
-        print(f"OTEL:       {otel_endpoint}")
+        print(f"OTEL:          {otel_endpoint}")
     if team_id:
-        print(f"Team ID:    {team_id}")
+        print(f"Team ID:       {team_id}")
     if dome_enabled:
-        print(f"Detections: {DETECTION_LOG} (file backup)")
+        print(f"Detections:    {DETECTION_LOG}")
+    print("-" * 60)
+    print("HOT-RELOAD: system_prompt=PER-REQUEST, dome_config=STARTUP-ONLY")
     print("=" * 60 + "\n")
 
     uvicorn.run(app, host=host, port=port)
