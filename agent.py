@@ -18,9 +18,11 @@ import asyncio
 import json
 import logging
 import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional, TYPE_CHECKING
+from uuid import uuid4
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -660,6 +662,93 @@ def create_concurrent_a2a_app(
 
 
 # =============================================================================
+# OpenAI-Compatible Chat Completions Endpoint
+# =============================================================================
+
+def add_chat_completions_endpoint(app: Any, dome: Any = None) -> None:
+    """Register /v1/chat/completions on the FastAPI app.
+
+    This enables redteam tools (Diamond, Promptfoo, Garak, PyRIT) to target
+    this A2A agent using the standard OpenAI chat completions protocol.
+
+    Dome guards are applied directly in the handler (the DomeMiddleware only
+    parses A2A JSON-RPC format, so chat completions needs its own guard calls).
+    """
+    from fastapi import Request as FastAPIRequest
+    from pydantic import BaseModel
+
+    class ChatMessage(BaseModel):
+        role: str
+        content: str
+
+    class ChatCompletionRequest(BaseModel):
+        model: str = "llama-3.1-8b-instant"
+        messages: list[ChatMessage]
+        temperature: float = 1.0
+        max_tokens: int | None = None
+
+    @app.post("/v1/chat/completions")
+    async def chat_completions(request: ChatCompletionRequest):
+        # Extract last user message
+        user_messages = [m for m in request.messages if m.role == "user"]
+        if not user_messages:
+            return JSONResponse(status_code=400, content={"error": "No user message found"})
+        user_text = user_messages[-1].content
+
+        # Dome input guard
+        if dome:
+            scan = await dome.input_guardrail.async_scan(
+                user_text,
+                agent_id=AGENT_ID,
+                team_id=os.environ.get("TEAM_ID"),
+            )
+            if scan.flagged:
+                return _chat_response(
+                    DomeMiddleware.BLOCKED_MESSAGE,
+                    model=request.model,
+                )
+
+        # Run Strands agent (synchronous) in thread pool
+        try:
+            agent = create_agent()
+            result = await asyncio.to_thread(agent, user_text)
+            response_text = str(result)
+        except Exception as e:
+            logger.warning(f"Agent execution failed in chat completions: {e}")
+            response_text = ConcurrentA2AExecutor.ERROR_MESSAGE
+
+        # Dome output guard
+        if dome:
+            out_scan = await dome.output_guardrail.async_scan(
+                response_text,
+                agent_id=AGENT_ID,
+                team_id=os.environ.get("TEAM_ID"),
+            )
+            if out_scan.flagged:
+                response_text = DomeMiddleware.BLOCKED_MESSAGE
+
+        return _chat_response(response_text, model=request.model)
+
+    logger.info("Chat completions endpoint registered at /v1/chat/completions")
+
+
+def _chat_response(content: str, model: str = "llama-3.1-8b-instant") -> JSONResponse:
+    """Build an OpenAI-compatible chat completion response."""
+    return JSONResponse(content={
+        "id": f"chatcmpl-{uuid4().hex[:24]}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": content},
+            "finish_reason": "stop",
+        }],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    })
+
+
+# =============================================================================
 # Main Entry Point
 # =============================================================================
 
@@ -738,7 +827,11 @@ def main():
         logger.info("Dome guardrails ENABLED")
 
     except ImportError:
+        dome = None
         logger.warning("vijil-dome not installed, running without guardrails")
+
+    # Register OpenAI-compatible chat completions endpoint for redteam tools
+    add_chat_completions_endpoint(app, dome=dome if dome_enabled else None)
 
     # Add CORS middleware AFTER Dome (LIFO order means CORS runs first)
     app.add_middleware(
@@ -771,6 +864,7 @@ def main():
     print("=" * 60)
     print(f"Agent ID:   {AGENT_ID}")
     print(f"A2A Server: http://localhost:{port}")
+    print(f"Chat API:   http://localhost:{port}/v1/chat/completions")
     print(f"Agent Card: http://localhost:{port}/.well-known/agent.json")
     print(f"Concurrency: ENABLED (fresh agent per request)")
     print("-" * 60)
