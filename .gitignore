@@ -22,3 +22,6 @@ venv/
 
 # Dome runtime logs (for Darwin feedback)
 dome_detections.jsonl
+
+# Local vijil-dome copy (used by Dockerfile.kind build context)
+vijil-dome/
