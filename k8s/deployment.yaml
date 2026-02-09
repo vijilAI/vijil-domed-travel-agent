@@ -40,10 +40,14 @@ spec:
           value: "http://otel-collector.vijil-telemetry.svc.cluster.local:4318"
         - name: OTEL_SERVICE_NAME
           value: "vijil-domed-travel-agent"
-        # Team ID for multi-tenant filtering (optional - can be passed via API)
-        # Set this to enable team-scoped Darwin queries
-        # - name: TEAM_ID
-        #   value: "<team-uuid>"
+        # Darwin integration: agent and team identity
+        # Required for Darwin to correlate Dome detections to the right agent/team
+        - name: VIJIL_AGENT_ID
+          value: "b7764389-ee2a-40f0-8436-bf754f818ef3"
+        - name: TEAM_ID
+          value: "7295f905-194b-42a8-95e2-0ff69bd6ceb9"
+        - name: OTEL_RESOURCE_ATTRIBUTES
+          value: "agent.id=b7764389-ee2a-40f0-8436-bf754f818ef3,team.id=7295f905-194b-42a8-95e2-0ff69bd6ceb9"
         resources:
           # Higher resources for parallel Dome guard execution
           # ML models (MBERT, DeBERTa, spaCy) run concurrently
